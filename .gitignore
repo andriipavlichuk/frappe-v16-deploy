@@ -1,0 +1,11 @@
+# Secrets / local config — copy config.env.example to config.env and edit
+config.env
+
+# Generated compose/env output (re-created by deploy.sh)
+gitops/
+
+# Logs
+*.log
+
+# Misc
+.env
