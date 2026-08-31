@@ -58,14 +58,12 @@ docker compose --project-name "erpnext-$PROJECT_NAME" --env-file "$ENVFILE" \
   -f compose.yaml $OVERRIDES config > "$GITOPS_PATH/$PROJECT_NAME.yaml" \
   || error_exit "Failed to render compose"
 
-# --- build image if requested (custom-image mode) ---
-if [ "${BUILD_MODE:-official}" = "build" ]; then
-  if docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
-    log "BUILD_MODE=build: image $IMAGE_TAG already present, skipping build"
-  else
-    log "BUILD_MODE=build: building image first (run 'bash build.sh' to do this explicitly)"
-    ( cd "$SCRIPT_DIR" && bash build.sh ) || error_exit "Build failed"
-  fi
+# --- ensure custom image exists ---
+if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+  log "Image $IMAGE_TAG not found locally. Building now..."
+  ( cd "$SCRIPT_DIR" && bash build.sh ) || error_exit "Build failed"
+else
+  log "Using existing image: $IMAGE_TAG"
 fi
 
 # --- mariadb ---
@@ -77,27 +75,11 @@ docker compose --project-name "mariadb-$PROJECT_NAME" --env-file "$GITOPS_PATH/m
 docker compose --project-name "erpnext-$PROJECT_NAME" -f "$GITOPS_PATH/$PROJECT_NAME.yaml" up -d \
   || error_exit "Failed to start ERPNext"
 
-# --- ensure build tools in backend (needed to compile native deps like blurhash-python for raven) ---
-log "Ensuring gcc/g++ in backend container"
+# --- ensure build tools in backend (needed for native deps) ---
+log "Ensuring gcc/g++ in backend container for native builds"
 docker compose --project-name "erpnext-$PROJECT_NAME" exec -u root backend \
   bash -c "apt-get update >/dev/null 2>&1 && apt-get install -y gcc g++ >/dev/null 2>&1" \
   || warn "Could not install gcc in backend (native builds may fail)"
-
-# --- install extra apps (official mode) ---
-if [ "${BUILD_MODE:-official}" = "official" ]; then
-  for entry in $EXTRA_APPS; do
-    name="${entry%%|*}"; rest="${entry#*|}"
-    url="${rest%%|*}"; branch="${rest#*|}"
-    if docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
-      test -d "/home/frappe/frappe-bench/apps/$name"; then
-      log "App $name already in bench, skipping get-app"
-    else
-      log "Installing app $name ($url @ $branch)"
-      docker compose --project-name "erpnext-$PROJECT_NAME" exec backend \
-        bench get-app "$url" --branch "$branch" || error_exit "Failed to get-app $name"
-    fi
-  done
-fi
 
 # --- create site if it does not exist (fresh test only; skip when migrating) ---
 if ! docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
@@ -107,11 +89,6 @@ if ! docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
     bench new-site "$SITE_NAME" --mariadb-user-host-login-scope='%' \
     --mariadb-root-password "$DB_PASSWORD" --install-app erpnext \
     --admin-password "$ADMIN_PASSWORD" || error_exit "Failed to create site"
-  for entry in $EXTRA_APPS; do
-    name="${entry%%|*}"
-    docker compose --project-name "erpnext-$PROJECT_NAME" exec backend \
-      bench --site "$SITE_NAME" install-app "$name" || error_exit "Failed to install-app $name"
-  done
 fi
 
 log "Migrating $SITE_NAME"
@@ -124,7 +101,7 @@ log "Restarting workers to load installed apps"
 docker compose --project-name "erpnext-$PROJECT_NAME" restart backend websocket frontend \
   || warn "Worker restart failed; restart the stack manually if apps 404/500"
 
-printf "\033[0;32m%s is deployed (MODE=%s, BUILD_MODE=%s)\033[0m\n" "$SITE_NAME" "$MODE" "$BUILD_MODE"
+printf "\033[0;32m%s is deployed (MODE=%s)\033[0m\n" "$SITE_NAME" "$MODE"
 if [ "$MODE" = "http" ]; then
   echo "Open: http://localhost:$HTTP_PORT/"
 fi

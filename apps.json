@@ -1,7 +1,3 @@
 [
-  {"url": "https://github.com/frappe/erpnext", "branch": "version-16"},
-  {"url": "https://github.com/frappe/payments", "branch": "version-16"},
-  {"url": "https://github.com/frappe/lms", "branch": "develop"},
-  {"url": "https://github.com/frappe/hrms", "branch": "version-16"},
-  {"url": "https://github.com/The-Commit-Company/raven", "branch": "develop"}
+  {"url": "https://github.com/frappe/erpnext", "branch": "version-16"}
 ]

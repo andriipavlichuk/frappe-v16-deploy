@@ -1,0 +1,217 @@
+#!/bin/bash
+set -euo pipefail
+
+# ============================================================================
+# new-project.sh - Interactive setup for a new Frappe v16 deployment
+# ============================================================================
+
+log() { echo -e "\033[0;34m$(date +'%Y-%m-%d %H:%M:%S') - $1\033[0m"; }
+error_exit() { echo -e "\033[0;31m$(date +'%Y-%m-%d %H:%M:%S') - ERROR $1\033[0m"; exit 1; }
+warn() { echo -e "\033[0;33m$(date +'%Y-%m-%d %H:%M:%S') - WARNING $1\033[0m"; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LETSENCRYPT_EMAIL=""  # Initialize as empty, set only for traefik mode
+
+echo ""
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║           Frappe ERPNext v16 - New Project Setup           ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo ""
+
+# ---- PROJECT BASICS ----
+read -p "Project name (no spaces, lowercase): " PROJECT_NAME
+[[ -z "$PROJECT_NAME" ]] && error_exit "Project name is required"
+[[ "$PROJECT_NAME" =~ [^a-z0-9_-] ]] && error_exit "Project name must be lowercase alphanumeric with underscores/hyphens only"
+
+read -p "Deploy type (local/server) [local]: " DEPLOY_TYPE
+DEPLOY_TYPE=${DEPLOY_TYPE:-local}
+[[ "$DEPLOY_TYPE" != "local" && "$DEPLOY_TYPE" != "server" ]] && error_exit "Deploy type must be 'local' or 'server'"
+
+if [ "$DEPLOY_TYPE" = "local" ]; then
+  MODE="http"
+  read -p "HTTP port [8080]: " HTTP_PORT
+  HTTP_PORT=${HTTP_PORT:-8080}
+  [[ ! "$HTTP_PORT" =~ ^[0-9]+$ ]] && error_exit "HTTP port must be numeric"
+  DOMAIN="localhost"
+else
+  MODE="traefik"
+  HTTP_PORT=""
+  read -p "Domain (FQDN) for your site: " DOMAIN
+  [[ -z "$DOMAIN" ]] && error_exit "Domain is required for server deployment"
+fi
+
+# ---- SITE NAME ----
+read -p "Site name (default: ${PROJECT_NAME}.${DOMAIN}): " SITE_NAME
+SITE_NAME=${SITE_NAME:-${PROJECT_NAME}.${DOMAIN}}
+
+# ---- IMAGE BUILD ----
+read -p "Image tag (default: ${PROJECT_NAME}/erpnext:v16): " IMAGE_TAG
+IMAGE_TAG=${IMAGE_TAG:-${PROJECT_NAME}/erpnext:v16}
+
+read -p "Python version [3.14.2]: " PYTHON_VERSION
+PYTHON_VERSION=${PYTHON_VERSION:-3.14.2}
+
+read -p "Node.js version [24.13.0]: " NODE_VERSION
+NODE_VERSION=${NODE_VERSION:-24.13.0}
+
+# ---- SECRETS ----
+read -p "Database password [123]: " DB_PASSWORD
+DB_PASSWORD=${DB_PASSWORD:-123}
+
+read -sp "Admin password (required, no default): " ADMIN_PASSWORD
+echo ""
+[[ -z "$ADMIN_PASSWORD" ]] && error_exit "Admin password is required"
+
+# ---- PATHS ----
+read -p "Frappe Docker path (default: ~/frappe_docker): " FRAPPE_DOCKER_PATH
+FRAPPE_DOCKER_PATH=${FRAPPE_DOCKER_PATH:-$HOME/frappe_docker}
+FRAPPE_DOCKER_PATH=$(eval echo "$FRAPPE_DOCKER_PATH")  # expand ~
+
+# ---- TRAEFIK (server only) ----
+if [ "$MODE" = "traefik" ]; then
+  read -p "Traefik Let's Encrypt email: " LETSENCRYPT_EMAIL
+  [[ -z "$LETSENCRYPT_EMAIL" ]] && error_exit "Email is required for Let's Encrypt"
+fi
+
+# ============================================================================
+# SUMMARY & CONFIRMATION
+# ============================================================================
+echo ""
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║                    Configuration Summary                   ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo ""
+echo "  Project Name:        $PROJECT_NAME"
+echo "  Deploy Type:         $DEPLOY_TYPE ($MODE)"
+echo "  Domain:              $DOMAIN"
+[[ -n "$HTTP_PORT" ]] && echo "  HTTP Port:           $HTTP_PORT"
+echo "  Site Name:           $SITE_NAME"
+echo "  Image Tag:           $IMAGE_TAG"
+echo "  Python Version:      $PYTHON_VERSION"
+echo "  Node.js Version:     $NODE_VERSION"
+echo "  DB Password:         $(echo "$DB_PASSWORD" | sed 's/./*/g')"
+echo "  Admin Password:      $(echo "$ADMIN_PASSWORD" | sed 's/./*/g')"
+echo "  Frappe Docker Path:  $FRAPPE_DOCKER_PATH"
+[[ -n "$LETSENCRYPT_EMAIL" ]] && echo "  Traefik Email:       $LETSENCRYPT_EMAIL"
+echo ""
+
+read -p "Continue with this configuration? (yes/no): " CONFIRM
+[[ "$CONFIRM" != "yes" ]] && { echo "Aborted."; exit 0; }
+
+# ============================================================================
+# SETUP
+# ============================================================================
+
+# Clone frappe_docker if not present
+if [ ! -d "$FRAPPE_DOCKER_PATH" ]; then
+  log "Cloning frappe_docker to $FRAPPE_DOCKER_PATH"
+  git clone https://github.com/frappe/frappe_docker.git "$FRAPPE_DOCKER_PATH" \
+    || error_exit "Failed to clone frappe_docker"
+else
+  log "Using existing frappe_docker at $FRAPPE_DOCKER_PATH"
+fi
+
+# Create gitops directory
+GITOPS_PATH="$SCRIPT_DIR/gitops"
+mkdir -p "$GITOPS_PATH"
+log "Created $GITOPS_PATH"
+
+# ============================================================================
+# CREATE config.env
+# ============================================================================
+CONFIG_FILE="$SCRIPT_DIR/config.env"
+log "Writing config.env"
+
+cat > "$CONFIG_FILE" <<EOF
+# ===========================================================================
+# $PROJECT_NAME v16 deployment configuration
+# Generated by new-project.sh on $(date)
+# ===========================================================================
+
+# ---- Project / site ----
+PROJECT_NAME=$PROJECT_NAME
+SITE_NAME=$SITE_NAME
+DOMAIN=$DOMAIN
+
+# ---- Paths ----
+FRAPPE_DOCKER_PATH=$FRAPPE_DOCKER_PATH
+GITOPS_PATH=$GITOPS_PATH
+
+# ---- Image build ----
+FRAPPE_REPO=https://github.com/frappe/frappe
+FRAPPE_BRANCH=version-16
+IMAGE_TAG=$IMAGE_TAG
+PYTHON_VERSION=$PYTHON_VERSION
+NODE_VERSION=$NODE_VERSION
+
+# ---- Apps (baked into custom image) ----
+APPS_JSON=$SCRIPT_DIR/apps.json
+
+# ---- Secrets (CHANGE THESE IN PRODUCTION) ----
+DB_PASSWORD=$DB_PASSWORD
+ADMIN_PASSWORD=$ADMIN_PASSWORD
+
+# ---- Networking ----
+MODE=$MODE
+EOF
+
+if [ "$MODE" = "http" ]; then
+  cat >> "$CONFIG_FILE" <<EOF
+HTTP_PORT=$HTTP_PORT
+EOF
+fi
+
+chmod 600 "$CONFIG_FILE"
+log "Created $CONFIG_FILE (mode 600)"
+
+# ============================================================================
+# CREATE gitops/traefik.env (server only)
+# ============================================================================
+if [ "$MODE" = "traefik" ]; then
+  TRAEFIK_ENV="$GITOPS_PATH/traefik.env"
+  log "Writing $TRAEFIK_ENV"
+  
+  cat > "$TRAEFIK_ENV" <<EOF
+# Traefik configuration for $PROJECT_NAME
+LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
+EOF
+  
+  chmod 600 "$TRAEFIK_ENV"
+  log "Created $TRAEFIK_ENV (mode 600)"
+  
+  # Create acme.json for SSL cert storage
+  ACME_JSON="$GITOPS_PATH/acme.json"
+  touch "$ACME_JSON"
+  chmod 600 "$ACME_JSON"
+  log "Created $ACME_JSON (mode 600)"
+fi
+
+# ============================================================================
+# NEXT STEPS
+# ============================================================================
+echo ""
+echo "╔════════════════════════════════════════════════════════════╗"
+echo "║                       Setup Complete!                      ║"
+echo "╚════════════════════════════════════════════════════════════╝"
+echo ""
+echo "Next steps:"
+echo ""
+echo "  1. Review configuration:"
+echo "     cat $CONFIG_FILE"
+echo ""
+echo "  2. Verify apps.json contains the apps you need:"
+echo "     cat $SCRIPT_DIR/apps.json"
+echo ""
+echo "  3. Build the custom Docker image:"
+echo "     bash $SCRIPT_DIR/build.sh"
+echo ""
+echo "  4. Deploy the stack:"
+echo "     bash $SCRIPT_DIR/deploy.sh"
+echo ""
+if [ "$DEPLOY_TYPE" = "local" ]; then
+  echo "  5. Access your site at: http://localhost:$HTTP_PORT"
+else
+  echo "  5. After deployment, access your site at: https://$DOMAIN"
+  echo "     (DNS must be configured to point to your server)"
+fi
+echo ""
