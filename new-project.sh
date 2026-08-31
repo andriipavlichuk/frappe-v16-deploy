@@ -10,7 +10,8 @@ error_exit() { echo -e "\033[0;31m$(date +'%Y-%m-%d %H:%M:%S') - ERROR $1\033[0m
 warn() { echo -e "\033[0;33m$(date +'%Y-%m-%d %H:%M:%S') - WARNING $1\033[0m"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LETSENCRYPT_EMAIL=""  # Initialize as empty, set only for traefik mode
+LETSENCRYPT_EMAIL=""       # Set only for traefik mode
+TRAEFIK_HASHED_PASSWORD="" # Set only for traefik mode
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════╗"
@@ -84,6 +85,9 @@ fi
 if [ "$MODE" = "traefik" ]; then
   read -p "Traefik Let's Encrypt email: " LETSENCRYPT_EMAIL
   [[ -z "$LETSENCRYPT_EMAIL" ]] && error_exit "Email is required for Let's Encrypt"
+  read -rsp "Traefik dashboard password hash: " TRAEFIK_HASHED_PASSWORD
+  echo ""
+  [[ -z "$TRAEFIK_HASHED_PASSWORD" ]] && error_exit "Traefik dashboard password hash is required"
 fi
 
 # ============================================================================
@@ -106,6 +110,7 @@ echo "  DB Password:         $(echo "$DB_PASSWORD" | sed 's/./*/g')"
 echo "  Admin Password:      $(echo "$ADMIN_PASSWORD" | sed 's/./*/g')"
 echo "  Frappe Docker Path:  $FRAPPE_DOCKER_PATH"
 [[ -n "$LETSENCRYPT_EMAIL" ]] && echo "  Traefik Email:       $LETSENCRYPT_EMAIL"
+[[ -n "$TRAEFIK_HASHED_PASSWORD" ]] && echo "  Traefik Auth Hash:   ********"
 echo ""
 
 read -p "Continue with this configuration? (yes/no): " CONFIRM
@@ -186,7 +191,9 @@ if [ "$MODE" = "traefik" ]; then
   
   cat > "$TRAEFIK_ENV" <<EOF
 # Traefik configuration for $PROJECT_NAME
-LETSENCRYPT_EMAIL=$LETSENCRYPT_EMAIL
+TRAEFIK_DOMAIN=$DOMAIN
+EMAIL=$LETSENCRYPT_EMAIL
+HASHED_PASSWORD=$TRAEFIK_HASHED_PASSWORD
 EOF
   
   chmod 600 "$TRAEFIK_ENV"

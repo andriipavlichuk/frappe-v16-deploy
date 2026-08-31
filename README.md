@@ -81,8 +81,10 @@ is not present locally, `deploy.sh` builds it automatically.
 
 For local deployments (`MODE=http`), open `http://localhost:<HTTP_PORT>/`.
 For server deployments (`MODE=traefik`), make sure DNS for `DOMAIN` points to the
-server before deployment; the initializer records the Let's Encrypt email in
-`gitops/traefik.env`.
+server before deployment. For server projects, the initializer asks for the
+Let's Encrypt email and a precomputed Traefik dashboard password hash, then
+writes the expected `TRAEFIK_DOMAIN`, `EMAIL`, and `HASHED_PASSWORD` variables
+to `gitops/traefik.env`.
 
 ## Migrate a v15 site
 
