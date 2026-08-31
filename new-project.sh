@@ -63,9 +63,22 @@ echo ""
 [[ -z "$ADMIN_PASSWORD" ]] && error_exit "Admin password is required"
 
 # ---- PATHS ----
-read -p "Frappe Docker path (default: ~/frappe_docker): " FRAPPE_DOCKER_PATH
+read -p "Frappe Docker directory (default: ~/frappe_docker): " FRAPPE_DOCKER_PATH
 FRAPPE_DOCKER_PATH=${FRAPPE_DOCKER_PATH:-$HOME/frappe_docker}
-FRAPPE_DOCKER_PATH=$(eval echo "$FRAPPE_DOCKER_PATH")  # expand ~
+case "$FRAPPE_DOCKER_PATH" in
+  "~") FRAPPE_DOCKER_PATH="$HOME" ;;
+  "~/"*) FRAPPE_DOCKER_PATH="$HOME/${FRAPPE_DOCKER_PATH#~/}" ;;
+  /*) ;;
+  *) FRAPPE_DOCKER_PATH="$SCRIPT_DIR/$FRAPPE_DOCKER_PATH" ;;
+esac
+
+# The deployment repository is separate from frappe_docker.  If a path already
+# exists, it must be a checkout that can build and render the required stack.
+if [ -e "$FRAPPE_DOCKER_PATH" ] && \
+   { [ ! -f "$FRAPPE_DOCKER_PATH/compose.yaml" ] ||
+     [ ! -f "$FRAPPE_DOCKER_PATH/images/custom/Containerfile" ]; }; then
+  error_exit "'$FRAPPE_DOCKER_PATH' exists but is not a compatible frappe_docker checkout. Choose an empty/nonexistent directory (for example ~/frappe_docker), or an existing checkout containing compose.yaml and images/custom/Containerfile."
+fi
 
 # ---- TRAEFIK (server only) ----
 if [ "$MODE" = "traefik" ]; then
@@ -102,7 +115,7 @@ read -p "Continue with this configuration? (yes/no): " CONFIRM
 # SETUP
 # ============================================================================
 
-# Clone frappe_docker if not present
+# Clone frappe_docker if not present. Existing directories were validated above.
 if [ ! -d "$FRAPPE_DOCKER_PATH" ]; then
   log "Cloning frappe_docker to $FRAPPE_DOCKER_PATH"
   git clone https://github.com/frappe/frappe_docker.git "$FRAPPE_DOCKER_PATH" \
