@@ -54,8 +54,9 @@ branch:
 ]
 ```
 
-Changing `apps.json` requires a rebuild. The list makes applications available
-in the image; on a new site `deploy.sh` installs ERPNext automatically. Install
+Changing `apps.json` requires a rebuild; `build.sh` automatically invalidates
+the application-install layer when the file changes. The list makes applications
+available in the image; on a new site `deploy.sh` installs ERPNext automatically. Install
 any additional application on that site afterwards, for example:
 
 ```bash
