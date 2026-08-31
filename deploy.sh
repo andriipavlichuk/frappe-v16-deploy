@@ -89,6 +89,23 @@ if ! docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
     bench new-site "$SITE_NAME" --mariadb-user-host-login-scope='%' \
     --mariadb-root-password "$DB_PASSWORD" --install-app erpnext \
     --admin-password "$ADMIN_PASSWORD" || error_exit "Failed to create site"
+
+  # Every directory in apps/ was baked into the image from apps.json. Frappe and
+  # ERPNext are already installed by bench new-site, so install the remaining
+  # applications on a fresh site in a deterministic order.
+  BAKED_APPS="$(docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
+  bash -c 'find /home/frappe/frappe-bench/apps -mindepth 1 -maxdepth 1 -type d -printf "%f\\n"' \
+  | sort)" || error_exit "Could not list applications baked into the image"
+     
+  while IFS= read -r app; do
+    case "$app" in
+      ""|frappe|erpnext) continue ;;
+    esac
+    log "Installing $app on $SITE_NAME"
+    docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
+      bench --site "$SITE_NAME" install-app "$app" \
+      || error_exit "Failed to install $app on $SITE_NAME"
+  done <<< "$BAKED_APPS"
 fi
 
 log "Migrating $SITE_NAME"

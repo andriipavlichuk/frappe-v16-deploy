@@ -55,9 +55,9 @@ branch:
 ```
 
 Changing `apps.json` requires a rebuild; `build.sh` automatically invalidates
-the application-install layer when the file changes. The list makes applications
-available in the image; on a new site `deploy.sh` installs ERPNext automatically. Install
-any additional application on that site afterwards, for example:
+the application-install layer when the file changes. On a **new** site,
+`deploy.sh` installs ERPNext first and then every other app baked into the image.
+For an existing site, install a newly added application manually, for example:
 
 ```bash
 docker compose --project-name "erpnext-<project-name>" exec backend \
