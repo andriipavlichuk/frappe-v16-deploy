@@ -2,7 +2,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+set -a
 source "$SCRIPT_DIR/config.env"
+set +a
 
 log() { echo -e "\033[0;34m$(date +'%Y-%m-%d %H:%M:%S') - $1\033[0m"; }
 error_exit() { echo -e "\033[0;31m$(date +'%Y-%m-%d %H:%M:%S') - ERROR $1\033[0m"; exit 1; }
@@ -16,7 +18,7 @@ fi
 SQL_BACKUP="$1"
 FILES_BACKUP="${2:-}"
 
-cd "$FRAPPE_DOCKER_PATH" || error_exit "Cannot cd to $FRAPPE_DOCKER_PATH"
+cd "$SCRIPT_DIR/docker" || error_exit "Cannot cd to $SCRIPT_DIR/docker"
 
 # Copy backup(s) into the backend container's site backup directory
 SITE_BACKUP_DIR="/home/frappe/frappe-bench/sites/$SITE_NAME/private/backups"

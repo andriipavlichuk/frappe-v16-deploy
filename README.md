@@ -1,23 +1,22 @@
 # Frappe ERPNext v16 deployment
 
-This repository is a small deployment wrapper around the upstream
-[`frappe_docker`](https://github.com/frappe/frappe_docker) project. It creates a
-custom Frappe/ERPNext v16 image, starts the ERPNext and MariaDB Compose stacks,
-and can restore a v15 site backup before migrating it to v16.
+This repository is a small, self-contained deployment wrapper for Frappe/
+ERPNext v16. It creates a custom image, starts the ERPNext and MariaDB Compose
+stacks, and can restore a v15 site backup before migrating it to v16.
 
-The two repositories have different jobs:
-
-- This repository holds the project configuration and deployment scripts.
-- `frappe_docker` supplies the Compose files and the custom-image Containerfile.
-
-Do not use this repository itself as the **Frappe Docker directory**. The setup
-script can clone `frappe_docker` for you into a separate directory such as
-`~/frappe_docker`.
+The Compose files, Containerfile, and support scripts under [`docker/`](docker)
+are vendored from the upstream
+[`frappe_docker`](https://github.com/frappe/frappe_docker) project and
+parameterized to fit this repo (see [Files](#files)) — there is no external
+`frappe_docker` checkout to clone or manage. To pull in an upstream fix, diff
+`docker/` against a fresh `frappe_docker` checkout and re-apply what's
+relevant by hand; `docker/compose.yaml` notes the commit it was vendored from.
 
 ## Prerequisites
 
 - Docker Engine with the Docker Compose plugin and BuildKit support
 - Git
+- `jq`
 - A free local port for HTTP deployments, or a domain whose DNS points to the
   server for Traefik deployments
 
@@ -30,11 +29,7 @@ bash new-project.sh
 ```
 
 It asks for the project and site names, deployment type, image versions and
-secrets. At the **Frappe Docker directory** prompt, accept the default
-`~/frappe_docker` or enter another nonexistent directory. The script clones the
-upstream repository there. If the directory already exists, it must be a
-compatible `frappe_docker` checkout containing `compose.yaml` and
-`images/custom/Containerfile`.
+secrets.
 
 The initializer writes an ignored, mode-600 `config.env` and creates the ignored
 `gitops/` output directory. For a Traefik deployment it also creates
@@ -42,10 +37,15 @@ The initializer writes an ignored, mode-600 `config.env` and creates the ignored
 
 ## Choose applications
 
-Edit [`apps.json`](apps.json) manually before building. It is the complete list
-of Frappe applications cloned into the custom image. Keep `erpnext`, then add
-every application your project needs, with its repository URL and compatible
-branch:
+Applications are split across two manually maintained files, by how often they
+change:
+
+- [`apps.json`](apps.json) — stable apps (`erpnext`, and anything else that
+  rarely changes). Installed by the first, `bench init` app layer.
+- [`apps.custom.json`](apps.custom.json) — fast-moving apps you iterate on
+  often. Installed by a second, later `bench get-app` layer.
+
+Both use the same format — repository URL and compatible branch:
 
 ```json
 [
@@ -54,10 +54,18 @@ branch:
 ]
 ```
 
-Changing `apps.json` requires a rebuild; `build.sh` automatically invalidates
-the application-install layer when the file changes. On a **new** site,
-`deploy.sh` installs ERPNext first and then every other app baked into the image.
-For an existing site, install a newly added application manually, for example:
+This split exists purely to keep Docker build caching effective: `build.sh`
+invalidates the `apps.json` layer with a hash of that file, but invalidates the
+`apps.custom.json` layer using each app's *live* branch HEAD (via
+`git ls-remote`) instead of the file's contents. That means a new commit on a
+custom app's branch rebuilds only that small, dependency-light layer — the
+`frappe`/`erpnext` layer stays cached and untouched. Editing `apps.json` (or
+adding/removing an app in `apps.custom.json`) still busts the corresponding
+layer as expected.
+
+On a **new** site, `deploy.sh` installs ERPNext first and then every other app
+baked into the image (from both files). For an existing site, install a newly
+added application manually, for example:
 
 ```bash
 docker compose --project-name "erpnext-<project-name>" exec backend \
@@ -65,7 +73,8 @@ docker compose --project-name "erpnext-<project-name>" exec backend \
 ```
 
 When migrating an existing site, every application already installed on that
-site must be present in `apps.json` before the image is built.
+site must be present in `apps.json` or `apps.custom.json` before the image is
+built.
 
 ## Build and deploy
 
@@ -74,10 +83,14 @@ bash build.sh
 bash deploy.sh
 ```
 
-`build.sh` creates the image specified by `IMAGE_TAG`. `deploy.sh` renders the
-Compose configuration into `gitops/`, starts a shared MariaDB container and the
-ERPNext stack, creates the site when needed, and runs migrations. If the image
-is not present locally, `deploy.sh` builds it automatically.
+`build.sh` builds the image specified by `IMAGE_TAG` using
+[`docker/Containerfile`](docker/Containerfile), customized for the two-layer
+app install described above. `deploy.sh` renders the Compose configuration
+from [`docker/compose.yaml`](docker/compose.yaml) and its overrides into
+`gitops/`, starts a shared
+MariaDB container and the ERPNext stack, creates the site when needed, and runs
+migrations. If the image is not present locally, `deploy.sh` builds it
+automatically.
 
 For local deployments (`MODE=http`), open `http://localhost:<HTTP_PORT>/`.
 For server deployments (`MODE=traefik`), make sure DNS for `DOMAIN` points to the
@@ -103,7 +116,16 @@ site created during deployment, restores the database, and runs `bench migrate`.
 - `new-project.sh` — interactive project initialization.
 - `config.env.example` — reference configuration; `config.env` is the local,
   ignored configuration used by the scripts.
-- `apps.json` — manually maintained application list for the custom image.
+- `apps.json` — manually maintained list of stable applications for the custom
+  image.
+- `apps.custom.json` — manually maintained list of fast-moving applications for
+  the custom image (see [Choose applications](#choose-applications)).
+- `docker/` — vendored, parameterized `frappe_docker` files this project
+  actually uses: `Containerfile` (split into a stable-apps layer and a
+  custom-apps layer), `compose.yaml`, `example.env`, `overrides/*.yaml`
+  (mariadb-shared, redis, multi-bench, traefik and their SSL variants), and
+  `resources/core/*` (nginx template/entrypoint, container entrypoint/start
+  scripts) that the Containerfile copies into the image.
 - `build.sh` — custom Docker image build.
 - `deploy.sh` — Compose rendering, stack startup, site creation and migration.
 - `migrate.sh` — v15 backup restore and v16 migration.
@@ -111,7 +133,9 @@ site created during deployment, restores the database, and runs `bench migrate`.
 ## Operational notes
 
 - Change the generated database and administrator passwords before production use.
-- `deploy.sh` updates `compose.yaml` and the MariaDB override inside the configured
-  `frappe_docker` checkout. Treat that checkout as deployment-managed.
+- `docker/compose.yaml` and `docker/overrides/compose.mariadb-shared.yaml` take
+  `IMAGE_TAG`/`PROJECT_NAME` via `${VAR}` interpolation from `config.env`
+  (`build.sh`/`deploy.sh`/`migrate.sh` export it with `set -a`); nothing under
+  `docker/` is edited in place at build or deploy time.
 - Generated configuration, Compose output and certificate data are intentionally
   excluded from Git.

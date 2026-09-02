@@ -2,24 +2,23 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+set -a
 source "$SCRIPT_DIR/config.env"
+set +a
 
 log() { echo -e "\033[0;34m$(date +'%Y-%m-%d %H:%M:%S') - $1\033[0m"; }
 error_exit() { echo -e "\033[0;31m$(date +'%Y-%m-%d %H:%M:%S') - ERROR $1\033[0m"; exit 1; }
 warn() { echo -e "\033[0;33m$(date +'%Y-%m-%d %H:%M:%S') - WARNING $1\033[0m"; }
 
-FD="$FRAPPE_DOCKER_PATH"
-cd "$FD" || error_exit "Cannot cd to $FRAPPE_DOCKER_PATH"
+FD="$SCRIPT_DIR/docker"
+cd "$FD" || error_exit "Cannot cd to $FD"
 
 mkdir -p "$GITOPS_PATH"
 ENVFILE="$GITOPS_PATH/$PROJECT_NAME.env"
 
-# --- image tag + pull_policy in compose.yaml ---
-sed -i "s|.*  image:.*|  image: $IMAGE_TAG|g" compose.yaml
-sed -i "/pull_policy/d" compose.yaml
-
-# --- mariadb container name ---
-sed -i "s/container_name: mariadb-database/container_name: mariadb-$PROJECT_NAME/g" overrides/compose.mariadb-shared.yaml
+# IMAGE_TAG (compose.yaml) and PROJECT_NAME (overrides/compose.mariadb-shared.yaml)
+# are consumed via ${VAR} interpolation, exported above from config.env - no more
+# in-place sed patching of these vendored files.
 
 # --- erpnext env file ---
 cp example.env "$ENVFILE"
@@ -35,14 +34,14 @@ echo "FRAPPE_SITE_NAME_HEADER=$SITE_NAME" >> "$ENVFILE"
 OVERRIDES="-f overrides/compose.redis.yaml -f overrides/compose.multi-bench.yaml"
 if [ "$MODE" = "http" ]; then
   log "MODE=http: publishing frontend on port $HTTP_PORT (no Traefik)"
-  cat > overrides/compose.local-http.yaml <<EOF
+  cat > "$GITOPS_PATH/compose.local-http.yaml" <<EOF
 services:
   frontend:
     ports:
       - "${HTTP_PORT}:8080"
 EOF
   docker network create traefik-public 2>/dev/null || true
-  OVERRIDES="$OVERRIDES -f overrides/compose.local-http.yaml"
+  OVERRIDES="$OVERRIDES -f $GITOPS_PATH/compose.local-http.yaml"
 elif [ "$MODE" = "traefik" ]; then
   log "MODE=traefik: starting Traefik for $DOMAIN"
   docker compose --project-name traefik --env-file "$GITOPS_PATH/traefik.env" \
