@@ -80,7 +80,7 @@ docker compose --project-name "erpnext-$PROJECT_NAME" exec -u root backend \
   bash -c "apt-get update >/dev/null 2>&1 && apt-get install -y gcc g++ >/dev/null 2>&1" \
   || warn "Could not install gcc in backend (native builds may fail)"
 
-# --- create site if it does not exist (fresh test only; skip when migrating) ---
+# --- create site if it does not exist ---
 if ! docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
   bench --site "$SITE_NAME" list-apps >/dev/null 2>&1; then
   log "Creating fresh site $SITE_NAME"
@@ -88,24 +88,50 @@ if ! docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
     bench new-site "$SITE_NAME" --mariadb-user-host-login-scope='%' \
     --mariadb-root-password "$DB_PASSWORD" --install-app erpnext \
     --admin-password "$ADMIN_PASSWORD" || error_exit "Failed to create site"
+fi
 
-  # Every directory in apps/ was baked into the image from apps.json. Frappe and
-  # ERPNext are already installed by bench new-site, so install the remaining
-  # applications on a fresh site in a deterministic order.
-  BAKED_APPS="$(docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
+# --- install every baked app not yet installed on the site ---
+# Runs on every deploy, not just when the site is first created: this way a
+# single app's install failure (or an app added to apps.json/apps.custom.json
+# after the site already existed) is retried/picked up on the next deploy.sh
+# run instead of being silently skipped forever once list-apps succeeds.
+BAKED_APPS="$(docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
   bash -c 'find /home/frappe/frappe-bench/apps -mindepth 1 -maxdepth 1 -type d -printf "%f\\n"' \
   | sort)" || error_exit "Could not list applications baked into the image"
-     
-  while IFS= read -r app; do
-    case "$app" in
-      ""|frappe|erpnext) continue ;;
-    esac
+
+INSTALLED_APPS="$(docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
+  bench --site "$SITE_NAME" list-apps | awk '{print $1}')" \
+  || error_exit "Could not list applications installed on $SITE_NAME"
+
+PENDING=()
+while IFS= read -r app; do
+  case "$app" in
+    ""|frappe|erpnext) continue ;;
+  esac
+  grep -qx "$app" <<< "$INSTALLED_APPS" || PENDING+=("$app")
+done <<< "$BAKED_APPS"
+
+# Multi-pass: some baked apps declare required_apps on other baked apps (e.g.
+# lms requires payments), so a single alphabetical pass can fail purely on
+# install order. Retry whatever is still pending each pass until a full pass
+# installs nothing new, which means the rest are genuine failures.
+while [ "${#PENDING[@]}" -gt 0 ]; do
+  NEXT_PENDING=()
+  INSTALLED_THIS_PASS=0
+  for app in "${PENDING[@]}"; do
     log "Installing $app on $SITE_NAME"
-    docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
-      bench --site "$SITE_NAME" install-app "$app" \
-      || error_exit "Failed to install $app on $SITE_NAME"
-  done <<< "$BAKED_APPS"
-fi
+    if docker compose --project-name "erpnext-$PROJECT_NAME" exec -T backend \
+      bench --site "$SITE_NAME" install-app "$app"; then
+      INSTALLED_THIS_PASS=1
+    else
+      NEXT_PENDING+=("$app")
+    fi
+  done
+  if [ "$INSTALLED_THIS_PASS" -eq 0 ]; then
+    error_exit "Failed to install: ${NEXT_PENDING[*]} (not a dependency-order issue; check the install-app output above)"
+  fi
+  PENDING=("${NEXT_PENDING[@]}")
+done
 
 log "Migrating $SITE_NAME"
 docker compose --project-name "erpnext-$PROJECT_NAME" exec backend \

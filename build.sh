@@ -7,6 +7,7 @@ source "$SCRIPT_DIR/config.env"
 set +a
 
 log() { echo -e "\033[0;34m$(date +'%Y-%m-%d %H:%M:%S') - $1\033[0m"; }
+warn() { echo -e "\033[0;33m$(date +'%Y-%m-%d %H:%M:%S') - WARNING $1\033[0m"; }
 error_exit() { echo -e "\033[0;31m$(date +'%Y-%m-%d %H:%M:%S') - ERROR $1\033[0m"; exit 1; }
 
 DOCKER_DIR="$SCRIPT_DIR/docker"
@@ -40,7 +41,15 @@ if [ -f "$APPS_CUSTOM_JSON" ] && [ -s "$APPS_CUSTOM_JSON" ]; then
 fi
 
 log "Building $IMAGE_TAG (frappe $FRAPPE_BRANCH) with apps from $APPS_JSON"
-docker build \
+
+# git clone/ls-remote to github.com during bench init has been observed to fail
+# intermittently ("could not read Username ... No such device or address") on
+# some networks, seemingly per-attempt rather than per-request - a retry of the
+# whole build (cheap: BuildKit keeps every already-built layer cached) reliably
+# gets past it. Not specific to this Containerfile; see README for details.
+BUILD_ATTEMPTS="${BUILD_ATTEMPTS:-5}"
+attempt=1
+until docker build \
   --build-arg=FRAPPE_PATH="$FRAPPE_REPO" \
   --build-arg=FRAPPE_BRANCH="$FRAPPE_BRANCH" \
   --build-arg=PYTHON_VERSION="${PYTHON_VERSION:-3.14.2}" \
@@ -49,6 +58,11 @@ docker build \
   --build-arg=CACHE_BUST_CUSTOM="$CACHE_BUST_CUSTOM" \
   "${SECRET_ARGS[@]}" \
   -t "$IMAGE_TAG" \
-  -f "$CONTAINERFILE" "$DOCKER_DIR" || error_exit "Docker build failed"
+  -f "$CONTAINERFILE" "$DOCKER_DIR"; do
+  [ "$attempt" -ge "$BUILD_ATTEMPTS" ] && error_exit "Docker build failed after $BUILD_ATTEMPTS attempts"
+  warn "Build attempt $attempt/$BUILD_ATTEMPTS failed (possible transient network issue reaching github.com); retrying in 5s..."
+  attempt=$((attempt + 1))
+  sleep 5
+done
 
 printf "\033[0;32mBuilt $IMAGE_TAG\033[0m\n"
